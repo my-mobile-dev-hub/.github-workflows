@@ -1,5 +1,7 @@
-name: Central OpenCode Agenton:
+name: Central OpenCode Agent
+on:
   workflow_call:
+  
 jobs:
   run-agent:
     runs-on: ubuntu-latest
