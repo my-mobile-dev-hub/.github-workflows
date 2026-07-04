@@ -1,0 +1,2 @@
+- name: OpenCode GitHub Action
+  uses: dceoy/opencode-action@v0.2.4
