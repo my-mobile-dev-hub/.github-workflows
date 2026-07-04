@@ -1,2 +1,44 @@
-- name: OpenCode GitHub Action
-  uses: dceoy/opencode-action@v0.2.4
+name: Central OpenCode Agenton:
+  workflow_call:
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Detect Model Alias from Comment
+        id: model-selector
+        run: |
+          COMMENT_BODY="${{ github.event.comment.body }}"
+          
+          # Default fallback model if no alias is found
+          SELECTED_MODEL="opencode/deepseek-v4-flash-free"
+          
+          # Check for custom keyword aliases in your mobile text
+          if [[ "$COMMENT_BODY" == *"@gemini"* ]]; then
+            SELECTED_MODEL="google/gemini-2.5-pro"
+          elif [[ "$COMMENT_BODY" == *"@flash"* ]]; then
+            SELECTED_MODEL="google/gemini-2.5-flash"
+          elif [[ "$COMMENT_BODY" == *"@router"* ]]; then
+            SELECTED_MODEL="openrouter/google/gemini-2.5-flash"
+          elif [[ "$COMMENT_BODY" == *"@coder"* ]]; then
+            SELECTED_MODEL="openrouter/qwen/qwen-2.5-coder-32b"
+          fi
+          
+          echo "chosen_model=$SELECTED_MODEL" >> $GITHUB_OUTPUT
+      - name: Run opencode
+        uses: anomalyco/opencode/github@latest
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        with:
+          model: ${{ steps.model-selector.outputs.chosen_model }}
