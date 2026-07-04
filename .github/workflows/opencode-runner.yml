@@ -11,10 +11,29 @@ jobs:
       pull-requests: write
       issues: write
     steps:
+      - name: Check for Develop Branch
+        id: branch-check
+        run: |
+          # Check GitHub API to see if the develop branch exists in the caller repository
+          STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://github.com{{ github.repository }}/branches/develop")
+          
+          # If develop exists (HTTP 200), use it. Otherwise, fall back to main.
+          if [ "$STATUS_CODE" -eq 200 ]; then
+            echo "TARGET_BRANCH=develop" >> $GITHUB_ENV
+            echo "Branch found! Targeting: develop"
+          else
+            echo "TARGET_BRANCH=main" >> $GITHUB_ENV
+            echo "Branch not found! Falling back to: main"
+          fi
+
       - name: Checkout Code
         uses: actions/checkout@v6
         with:
           persist-credentials: false
+          ref: ${{ env.TARGET_BRANCH }} # Uses develop if available, otherwise main
+          fetch-depth: 0                # Fetches full history so the agent sees everything
 
       - name: Detect Model Alias from Comment
         id: model-selector
@@ -36,11 +55,13 @@ jobs:
           fi
           
           echo "chosen_model=$SELECTED_MODEL" >> $GITHUB_OUTPUT
+
       - name: Run opencode
         uses: anomalyco/opencode/github@latest
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           model: ${{ steps.model-selector.outputs.chosen_model }}
