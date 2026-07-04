@@ -14,13 +14,14 @@ jobs:
       - name: Check for Develop Branch
         id: branch-check
         run: |
-          # Added double-quotes around the API URL and appended "|| true" to prevent exit code crashes
+          # 1. Fixed the API endpoint URL structure
+          # 2. Added a fallback default of 0 if STATUS_CODE returns blank to prevent syntax errors
           STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            "https://github.com{{ github.repository }}/branches/develop" || true)
+            "https://github.com{{ github.repository }}/branches/develop" || echo "0")
           
           # If develop exists (HTTP 200), use it. Otherwise, safely fall back to main.
-          if [ "$STATUS_CODE" -eq 200 ]; then
+          if [ "${STATUS_CODE}" -eq 200 ]; then
             echo "TARGET_BRANCH=develop" >> $GITHUB_ENV
             echo "Branch found! Targeting: develop"
           else
