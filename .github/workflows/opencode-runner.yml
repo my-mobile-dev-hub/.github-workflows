@@ -70,3 +70,4 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           model: ${{ steps.model-selector.outputs.chosen_model }}
+          base_branch: ${{ env.TARGET_BRANCH }}
