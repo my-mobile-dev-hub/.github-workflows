@@ -1,0 +1,254 @@
+name: Central OpenDesign Agent
+
+on:
+  workflow_call:
+
+jobs:
+  run-design:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Check for Develop Branch
+        id: branch-check
+        run: |
+          set -euo pipefail
+
+          STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/branches/develop" || echo "0")
+
+          if [ "$STATUS_CODE" -eq 200 ]; then
+            echo "TARGET_BRANCH=develop" >> "$GITHUB_ENV"
+            echo "Branch found! Targeting: develop"
+          else
+            echo "TARGET_BRANCH=main" >> "$GITHUB_ENV"
+            echo "Branch not found or API failed! Falling back to: main"
+          fi
+
+      - name: Checkout Code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 0
+
+      - name: Enable Corepack (pnpm 10.33.x pinned)
+        run: corepack enable
+
+      - name: Detect Model Alias from Comment
+        id: model-selector
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+
+          SELECTED_MODEL="opencode/deepseek-v4-flash-free"
+
+          if [[ "$COMMENT_BODY" == *"@gemini"* ]]; then
+            SELECTED_MODEL="google/gemini-2.5-pro"
+          elif [[ "$COMMENT_BODY" == *"@flash"* ]]; then
+            SELECTED_MODEL="google/gemini-2.5-flash"
+          elif [[ "$COMMENT_BODY" == *"@router"* ]]; then
+            SELECTED_MODEL="openrouter/google/gemini-2.5-flash"
+          elif [[ "$COMMENT_BODY" == *"@coder"* ]]; then
+            SELECTED_MODEL="openrouter/qwen/qwen-2.5-coder-32b"
+          fi
+
+          echo "chosen_model=$SELECTED_MODEL" >> "$GITHUB_OUTPUT"
+
+      # Built from source — verified against apps/daemon/src/cli.ts.
+      # There's no published npm package for `od` as of this doc revision.
+      - name: Clone and build Open Design CLI
+        id: build-od
+        run: |
+          set -euo pipefail
+
+          OD_HOME="${RUNNER_TEMP}/open-design"
+          git clone --depth 1 https://github.com/nexu-io/open-design.git "$OD_HOME"
+
+          cd "$OD_HOME"
+          pnpm install --frozen-lockfile
+          pnpm --filter @open-design/daemon build
+
+          OD_BIN="$OD_HOME/apps/daemon/dist/cli.js"
+          test -f "$OD_BIN"
+          echo "od_bin=$OD_BIN" >> "$GITHUB_OUTPUT"
+
+      # Confirmed from cli.ts / daemon-startup.ts: `od mcp` is a thin
+      # stdio<->HTTP proxy — "the daemon must be running locally for
+      # tool calls to succeed." --headless skips the browser auto-open.
+      - name: Start Open Design daemon (headless)
+        id: od-daemon
+        run: |
+          set -euo pipefail
+
+          OD_PORT=7457
+          OD_DATA_DIR="${RUNNER_TEMP}/od-data"
+          mkdir -p "$OD_DATA_DIR"
+
+          OD_DATA_DIR="$OD_DATA_DIR" \
+            node "${{ steps.build-od.outputs.od_bin }}" daemon start --headless --port "$OD_PORT" \
+            > "${RUNNER_TEMP}/od-daemon.log" 2>&1 &
+          echo "daemon_pid=$!" >> "$GITHUB_OUTPUT"
+
+          for i in $(seq 1 30); do
+            if curl -s "http://127.0.0.1:${OD_PORT}/api/health" > /dev/null; then
+              echo "Daemon is up on port ${OD_PORT}"
+              break
+            fi
+            sleep 1
+          done
+          curl -sf "http://127.0.0.1:${OD_PORT}/api/health" || {
+            echo "Daemon failed to start — log follows:"
+            cat "${RUNNER_TEMP}/od-daemon.log"
+            exit 1
+          }
+
+          echo "daemon_url=http://127.0.0.1:${OD_PORT}" >> "$GITHUB_OUTPUT"
+          echo "data_dir=$OD_DATA_DIR" >> "$GITHUB_OUTPUT"
+
+      # `od project create` gives us a scoped workspace so the agent's
+      # create_artifact / get_file calls land somewhere specific instead
+      # of an ambiguous "active project."
+      - name: Create scratch Open Design project
+        id: od-project
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+
+          PROJECT_JSON=$(node "${{ steps.build-od.outputs.od_bin }}" project create \
+            --name "mobile-design-${{ github.run_id }}" \
+            --daemon-url "${{ steps.od-daemon.outputs.daemon_url }}" \
+            --json)
+
+          PROJECT_ID=$(node -e "console.log(JSON.parse(process.argv[1]).id ?? JSON.parse(process.argv[1]).project?.id)" "$PROJECT_JSON")
+          test -n "$PROJECT_ID"
+          echo "project_id=$PROJECT_ID" >> "$GITHUB_OUTPUT"
+
+          # Everything after "/design" becomes the brief.
+          PROMPT="${COMMENT_BODY#*/design}"
+          PROMPT="$(echo "$PROMPT" | sed 's/^[[:space:]]*//')"
+          {
+            echo "prompt<<EOF"
+            echo "$PROMPT"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # Writes the MCP entry into the PROJECT-level opencode config, since
+      # that's what the Action actually reads (not ~/.config/opencode).
+      # Command shape verified against mcp-install-info.ts's
+      # buildMcpInstallPayload — this is byte-for-byte what
+      # `od mcp install` itself would generate, just written to the
+      # right file for this environment.
+      - name: Wire Open Design MCP server into project-level opencode.json
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("fs");
+            const path = "opencode.json";
+            let config = {};
+            if (fs.existsSync(path)) {
+              config = JSON.parse(fs.readFileSync(path, "utf8"));
+            }
+            config.$schema = config.$schema || "https://opencode.ai/config.json";
+            config.mcp = config.mcp || {};
+            config.mcp.open_design = {
+              type: "local",
+              command: [process.execPath, process.argv[1], "mcp", "--daemon-url", process.argv[2]],
+              enabled: true,
+              environment: { OD_DATA_DIR: process.argv[3] }
+            };
+            fs.writeFileSync(path, JSON.stringify(config, null, 2));
+          ' "${{ steps.build-od.outputs.od_bin }}" "${{ steps.od-daemon.outputs.daemon_url }}" "${{ steps.od-daemon.outputs.data_dir }}"
+
+      # UNVERIFIED ASSUMPTION: the Action reads AGENTS.md / project rule
+      # files the same way a local `opencode` session does (per OpenCode's
+      # own rules.mdx convention). This is how we hand the agent the
+      # active project id without being able to rewrite the triggering
+      # comment itself. Confirm on a real run, then remove this note.
+      - name: Append session context for the agent
+        run: |
+          set -euo pipefail
+          {
+            echo ""
+            echo "## Open Design session (ephemeral — auto-generated for this run)"
+            echo "An \`open_design\` MCP server is available. Active Open Design"
+            echo "project id: \`${{ steps.od-project.outputs.project_id }}\`."
+            echo "Use \`create_artifact\` on that project to produce the requested"
+            echo "design. Brief:"
+            echo ""
+            echo '${{ steps.od-project.outputs.prompt }}'
+          } >> AGENTS.md
+
+      - name: Run opencode
+        id: run-opencode
+        uses: anomalyco/opencode/github@latest
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          model: ${{ steps.model-selector.outputs.chosen_model }}
+          base_branch: ${{ env.TARGET_BRANCH }}
+          base: ${{ env.TARGET_BRANCH }}
+
+      # Pull whatever the agent created inside the OD project back onto
+      # disk in the actual repo checkout, since create_artifact writes
+      # into Open Design's own project storage, not directly into git.
+      - name: Pull generated artifacts into the repo
+        run: |
+          set -euo pipefail
+
+          mkdir -p .ai-system/designs
+          DAEMON_URL="${{ steps.od-daemon.outputs.daemon_url }}"
+          PROJECT_ID="${{ steps.od-project.outputs.project_id }}"
+
+          node "${{ steps.build-od.outputs.od_bin }}" files list "$PROJECT_ID" \
+            --daemon-url "$DAEMON_URL" --json > "${RUNNER_TEMP}/od-files.json"
+
+          node -e '
+            const fs = require("fs");
+            const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            const files = Array.isArray(data.files) ? data.files : [];
+            for (const f of files) console.log(f.name ?? f.path);
+          ' "${RUNNER_TEMP}/od-files.json" > "${RUNNER_TEMP}/od-file-names.txt"
+
+          while IFS= read -r rel; do
+            [ -z "$rel" ] && continue
+            mkdir -p ".ai-system/designs/$(dirname "$rel")"
+            node "${{ steps.build-od.outputs.od_bin }}" files read "$PROJECT_ID" "$rel" \
+              --daemon-url "$DAEMON_URL" > ".ai-system/designs/$rel"
+          done < "${RUNNER_TEMP}/od-file-names.txt"
+
+      # Revert the ephemeral AGENTS.md note and opencode.json MCP entry —
+      # they were only needed to hand this run its project id, they
+      # shouldn't get committed as permanent project config.
+      - name: Clean up ephemeral session config
+        run: |
+          set -euo pipefail
+          git checkout -- AGENTS.md opencode.json 2>/dev/null || true
+
+      - name: Commit generated designs
+        run: |
+          set -euo pipefail
+          git config user.name "opendesign-bot"
+          git config user.email "opendesign-bot@users.noreply.github.com"
+          git add .ai-system/designs
+          if ! git diff --cached --quiet; then
+            git commit -m "design: generate assets from mobile prompt"
+            git push origin HEAD:${{ env.TARGET_BRANCH }}
+          else
+            echo "No design changes to commit"
+          fi
+
+      - name: Stop Open Design daemon
+        if: always()
+        run: kill "${{ steps.od-daemon.outputs.daemon_pid }}" 2>/dev/null || true
