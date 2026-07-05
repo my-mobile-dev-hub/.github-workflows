@@ -62,6 +62,7 @@ jobs:
           echo "chosen_model=$SELECTED_MODEL" >> "$GITHUB_OUTPUT"
 
       - name: Run opencode
+        id: run-opencode
         uses: anomalyco/opencode/github@latest
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
@@ -71,3 +72,38 @@ jobs:
         with:
           model: ${{ steps.model-selector.outputs.chosen_model }}
           base_branch: ${{ env.TARGET_BRANCH }}
+          # Alias in case this action version reads `base` instead of
+          # `base_branch` internally. Harmless if the action ignores it.
+          base: ${{ env.TARGET_BRANCH }}
+
+      # SAFETY NET: force-correct the PR's base branch regardless of what
+      # the action actually did with the inputs above. Verify against
+      # anomalyco/opencode's action.yml whether it exposes a PR number
+      # output — if it does, swap the heuristic below for that instead
+      # of "most recent open PR" to avoid any race with concurrent runs.
+      - name: Force-correct PR base branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Give the API a moment to register the PR the action just opened
+          sleep 5
+
+          PR_NUMBER=$(gh pr list \
+            --repo "${{ github.repository }}" \
+            --state open \
+            --json number,baseRefName,createdAt \
+            --jq "sort_by(.createdAt) | reverse | .[0].number" || echo "")
+
+          if [ -n "$PR_NUMBER" ] && [ "$PR_NUMBER" != "null" ]; then
+            CURRENT_BASE=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json baseRefName --jq .baseRefName)
+            if [ "$CURRENT_BASE" != "$TARGET_BRANCH" ]; then
+              echo "PR #$PR_NUMBER opened against '$CURRENT_BASE' — correcting to '$TARGET_BRANCH'"
+              gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --base "$TARGET_BRANCH"
+            else
+              echo "PR #$PR_NUMBER already targets '$TARGET_BRANCH' — no action needed"
+            fi
+          else
+            echo "No open PR found to correct — skipping"
+          fi
