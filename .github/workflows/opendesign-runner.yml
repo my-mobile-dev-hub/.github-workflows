@@ -132,8 +132,12 @@ jobs:
           test -n "$PROJECT_ID"
           echo "project_id=$PROJECT_ID" >> "$GITHUB_OUTPUT"
 
-          # Everything after "/design" becomes the brief.
-          PROMPT="${COMMENT_BODY#*/design}"
+          # Everything after "/oc design" or "/opencode design" becomes
+          # the brief. Matches the local-trigger.yml routing convention.
+          PROMPT="${COMMENT_BODY#*/oc design}"
+          if [ "$PROMPT" = "$COMMENT_BODY" ]; then
+            PROMPT="${COMMENT_BODY#*/opencode design}"
+          fi
           PROMPT="$(echo "$PROMPT" | sed 's/^[[:space:]]*//')"
           {
             echo "prompt<<EOF"
