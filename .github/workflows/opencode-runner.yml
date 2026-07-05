@@ -1,7 +1,8 @@
 name: Central OpenCode Agent
+
 on:
   workflow_call:
-  
+
 jobs:
   run-agent:
     runs-on: ubuntu-latest
@@ -10,22 +11,23 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
+
     steps:
       - name: Check for Develop Branch
         id: branch-check
         run: |
-          # 1. Fixed the API endpoint URL structure
-          # 2. Added a fallback default of 0 if STATUS_CODE returns blank to prevent syntax errors
+          set -euo pipefail
+
           STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            "https://github.com{{ github.repository }}/branches/develop" || echo "0")
-          
-          # If develop exists (HTTP 200), use it. Otherwise, safely fall back to main.
-          if [ "${STATUS_CODE}" -eq 200 ]; then
-            echo "TARGET_BRANCH=develop" >> $GITHUB_ENV
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/branches/develop" || echo "0")
+
+          if [ "$STATUS_CODE" -eq 200 ]; then
+            echo "TARGET_BRANCH=develop" >> "$GITHUB_ENV"
             echo "Branch found! Targeting: develop"
           else
-            echo "TARGET_BRANCH=main" >> $GITHUB_ENV
+            echo "TARGET_BRANCH=main" >> "$GITHUB_ENV"
             echo "Branch not found or API failed! Falling back to: main"
           fi
 
@@ -33,18 +35,20 @@ jobs:
         uses: actions/checkout@v6
         with:
           persist-credentials: false
-          ref: ${{ env.TARGET_BRANCH }} # Uses develop if available, otherwise main
-          fetch-depth: 0                # Fetches full history so the agent sees everything
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 0
 
       - name: Detect Model Alias from Comment
         id: model-selector
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
-          COMMENT_BODY="${{ github.event.comment.body }}"
-          
+          set -euo pipefail
+
           # Default fallback model if no alias is found
           SELECTED_MODEL="opencode/deepseek-v4-flash-free"
-          
-          # Check for custom keyword aliases in your mobile text
+
+          # Match aliases safely from env var (multiline-safe)
           if [[ "$COMMENT_BODY" == *"@gemini"* ]]; then
             SELECTED_MODEL="google/gemini-2.5-pro"
           elif [[ "$COMMENT_BODY" == *"@flash"* ]]; then
@@ -54,8 +58,8 @@ jobs:
           elif [[ "$COMMENT_BODY" == *"@coder"* ]]; then
             SELECTED_MODEL="openrouter/qwen/qwen-2.5-coder-32b"
           fi
-          
-          echo "chosen_model=$SELECTED_MODEL" >> $GITHUB_OUTPUT
+
+          echo "chosen_model=$SELECTED_MODEL" >> "$GITHUB_OUTPUT"
 
       - name: Run opencode
         uses: anomalyco/opencode/github@latest
