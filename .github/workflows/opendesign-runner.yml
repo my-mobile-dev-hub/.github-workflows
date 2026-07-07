@@ -34,7 +34,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v6
         with:
-          persist-credentials: false
+          persist-credentials: true
           ref: ${{ env.TARGET_BRANCH }}
           fetch-depth: 0
 
@@ -240,6 +240,11 @@ jobs:
           set -euo pipefail
           git checkout -- AGENTS.md opencode.json 2>/dev/null || true
 
+      # Right before push, force token-authenticated remote
+      - name: Ensure authenticated git remote
+        run: |
+          git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+
       # Never push straight to TARGET_BRANCH. If the opencode session
       # above already created its own working branch (normal for a
       # coding-agent run that touched more than just design files), we
@@ -265,10 +270,12 @@ jobs:
           git add .ai-system/designs
           if ! git diff --cached --quiet; then
             git commit -m "design: generate assets from mobile prompt"
+            git push origin "HEAD:$CURRENT_BRANCH"
+            echo "branch=$CURRENT_BRANCH" >> "$GITHUB_OUTPUT"
           else
             echo "No new design changes to commit"
+            echo "branch=$CURRENT_BRANCH" >> "$GITHUB_OUTPUT"
           fi
-
           git push origin "HEAD:$CURRENT_BRANCH"
           echo "branch=$CURRENT_BRANCH" >> "$GITHUB_OUTPUT"
 
