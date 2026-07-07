@@ -98,7 +98,7 @@ jobs:
           echo "daemon_pid=$!" >> "$GITHUB_OUTPUT"
 
           for i in $(seq 1 30); do
-            if curl -s "http://127.0.0.1:${OD_PORT}/api/health" > /dev/null; then
+            if curl -sf "http://127.0.0.1:${OD_PORT}/api/health" > /dev/null; then
               echo "Daemon is up on port ${OD_PORT}"
               break
             fi
@@ -180,17 +180,17 @@ jobs:
       - name: Append session context for the agent
         run: |
           set -euo pipefail
-          {
-            echo ""
-            echo "## Open Design session (ephemeral — auto-generated for this run)"
-            echo "An \`open_design\` MCP server is available. Active Open Design"
-            echo "project id: \`${{ steps.od-project.outputs.project_id }}\`."
-            echo "Use \`create_artifact\` on that project to produce the requested"
-            echo "design. Brief:"
-            echo ""
-            echo '${{ steps.od-project.outputs.prompt }}'
-          } >> AGENTS.md
-
+          cat <<'EOF' >> AGENTS.md
+      
+          ## Open Design session (ephemeral — auto-generated for this run)
+          An `open_design` MCP server is available. Active Open Design
+          project id: `${{ steps.od-project.outputs.project_id }}`.
+          Use `create_artifact` on that project to produce the requested
+          design. Brief:
+          
+          ${{ steps.od-project.outputs.prompt }}
+          EOF
+          
       - name: Run opencode
         id: run-opencode
         uses: anomalyco/opencode/github@latest
