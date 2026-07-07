@@ -34,7 +34,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v6
         with:
-          persist-credentials: true
+          persist-credentials: false
           ref: ${{ env.TARGET_BRANCH }}
           fetch-depth: 0
 
@@ -243,8 +243,11 @@ jobs:
       # Right before push, force token-authenticated remote
       - name: Ensure authenticated git remote
         run: |
+          set -euo pipefail
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git config --global --unset-all http.https://github.com/.extraheader || true
           git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
-
+      
       # Never push straight to TARGET_BRANCH. If the opencode session
       # above already created its own working branch (normal for a
       # coding-agent run that touched more than just design files), we
@@ -270,11 +273,8 @@ jobs:
           git add .ai-system/designs
           if ! git diff --cached --quiet; then
             git commit -m "design: generate assets from mobile prompt"
-            git push origin "HEAD:$CURRENT_BRANCH"
-            echo "branch=$CURRENT_BRANCH" >> "$GITHUB_OUTPUT"
           else
             echo "No new design changes to commit"
-            echo "branch=$CURRENT_BRANCH" >> "$GITHUB_OUTPUT"
           fi
           git push origin "HEAD:$CURRENT_BRANCH"
           echo "branch=$CURRENT_BRANCH" >> "$GITHUB_OUTPUT"
@@ -284,6 +284,7 @@ jobs:
       # heuristic — since we know precisely which branch is ours, this
       # also covers the case where the opencode action didn't open a PR
       # at all (e.g. it only made OD tool calls, no separate branch).
+      
       - name: Ensure PR exists and targets the right base
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
