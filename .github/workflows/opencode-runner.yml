@@ -71,10 +71,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           model: ${{ steps.model-selector.outputs.chosen_model }}
-          base_branch: ${{ env.TARGET_BRANCH }}
-          # Alias in case this action version reads `base` instead of
-          # `base_branch` internally. Harmless if the action ignores it.
-          base: ${{ env.TARGET_BRANCH }}
 
       # SAFETY NET: force-correct the PR's base branch regardless of what
       # the action actually did with the inputs above. Verify against
